@@ -1,0 +1,26 @@
+# aqua - Declarative CLI Version Manager
+# https://aquaproj.github.io/
+
+# チェックサムの検証を有効化（セキュリティ）
+checksum:
+  enabled: true
+  require_checksum: false
+
+# レジストリの設定
+registries:
+  - type: standard
+    ref: v4.454.0
+
+# パッケージの設定
+packages:
+  # Node.js LTS
+  - name: nodejs/nodejs.org
+    version: "20.18.0" # LTS推奨バージョン（必要に応じて変更可能）
+
+  # pnpm（固定バージョン）
+  - name: pnpm/pnpm
+    version: "9.15.0" # 固定バージョン
+
+  # Tauri CLI v2
+  - name: tauri-apps/tauri-cli
+    version: "2.0.0" # Tauri v2のCLI

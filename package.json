@@ -1,0 +1,16 @@
+{
+  "name": "lottie-editor",
+  "version": "0.1.0",
+  "description": "Lottie Open Studio - macOS App",
+  "private": true,
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "web:dev": "pnpm -C web dev",
+    "web:build": "pnpm -C web build",
+    "web:install": "pnpm -C web install"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}

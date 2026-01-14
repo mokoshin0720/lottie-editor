@@ -1,0 +1,37 @@
+{
+  "productName": "Lottie Editor",
+  "version": "0.1.0",
+  "identifier": "com.lottie.editor",
+  "build": {
+    "beforeBuildCommand": "pnpm -C web/lottie-tools/web-editor build",
+    "devUrl": "http://localhost:5173/lottie-tools/",
+    "frontendDist": "../web/lottie-tools/web-editor/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Lottie Editor",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [],
+    "resources": [],
+    "externalBin": [],
+    "copyright": "",
+    "category": "Graphics",
+    "shortDescription": "Lottie Open Studio macOS App",
+    "longDescription": "Lottie Open Studio - macOS App"
+  }
+}
