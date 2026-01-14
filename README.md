@@ -66,22 +66,35 @@ Webアプリの `package.json` の `build` スクリプトを確認し、出力�
 
 ## 開発
 
-### 開発モード（開発サーバーを使用）
+### 開発モード（ホットリロード対応）
+
+**推奨方法（1コマンドで起動）**:
 
 ```bash
-# 1. Webアプリの開発サーバーを起動（別ターミナル）
-pnpm -C web dev
-
-# 2. Tauriアプリを起動（別ターミナル）
-./.aqua/bin/tauri dev
+cd src-tauri
+cargo tauri dev
 ```
 
-または、PATHに追加済みの場合：
+このコマンドを実行すると：
+- 自動的にWebアプリの開発サーバーが起動（`beforeDevCommand`で実行）
+- Tauriアプリが起動
+- **ホットリロードが有効**：
+  - Webアプリのファイル（React/TypeScript）を変更すると自動的にリロード
+  - Rustコードを変更すると自動的に再コンパイル・リロード
+
+**手動で開発サーバーを起動する場合**:
 
 ```bash
-pnpm -C web dev
-tauri dev
+# ターミナル1: Webアプリの開発サーバーを起動
+cd web/lottie-tools/web-editor
+pnpm dev
+
+# ターミナル2: Tauriアプリを起動
+cd src-tauri
+cargo tauri dev
 ```
+
+この場合もホットリロードは有効です。
 
 ### 本番ビルド
 

@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "identifier": "com.lottie.editor",
   "build": {
+    "beforeDevCommand": "pnpm -C web/lottie-tools/web-editor dev",
     "beforeBuildCommand": "pnpm -C web/lottie-tools/web-editor build",
     "devUrl": "http://localhost:5173/lottie-tools/",
     "frontendDist": "../web/lottie-tools/web-editor/dist"

@@ -25,15 +25,30 @@ pnpm -C web install
 #   - build.distDir: ビルド出力ディレクトリに合わせる
 ```
 
-## 開発モード
+## 開発モード（ホットリロード対応）
+
+**推奨方法（1コマンドで起動）**:
+
+```bash
+cd src-tauri
+cargo tauri dev
+```
+
+このコマンドで：
+- Webアプリの開発サーバーが自動起動
+- Tauriアプリが起動
+- ホットリロードが有効（ファイル変更時に自動リロード）
+
+**手動で起動する場合**:
 
 ```bash
 # ターミナル1: Webアプリの開発サーバーを起動
-pnpm -C web dev
+cd web/lottie-tools/web-editor
+pnpm dev
 
 # ターミナル2: Tauriアプリを起動
-./.aqua/bin/tauri dev
-# または PATH追加済みの場合: tauri dev
+cd src-tauri
+cargo tauri dev
 ```
 
 ## 本番ビルド
