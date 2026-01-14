@@ -1,0 +1,749 @@
+import { useEffect, useRef, useState } from 'react';
+import './Timeline.css';
+import { useStore } from '../store/useStore';
+import { PlaybackEngine } from '../engine/PlaybackEngine';
+import type { AnimatableProperty, BezierTangents, Keyframe } from '../models/Keyframe';
+import { BezierEditor } from './BezierEditor';
+
+export function Timeline() {
+  const project = useStore((state) => state.project);
+  const setCurrentTime = useStore((state) => state.setCurrentTime);
+  const setIsPlaying = useStore((state) => state.setIsPlaying);
+  const toggleLoop = useStore((state) => state.toggleLoop);
+  const getKeyframesForLayer = useStore((state) => state.getKeyframesForLayer);
+  const addKeyframe = useStore((state) => state.addKeyframe);
+  const deleteKeyframe = useStore((state) => state.deleteKeyframe);
+  const updateKeyframe = useStore((state) => state.updateKeyframe);
+  const timelineZoom = useStore((state) => state.timelineZoom);
+  const setTimelineZoom = useStore((state) => state.setTimelineZoom);
+  const resetTimelineView = useStore((state) => state.resetTimelineView);
+
+  const [collapsedLayers, setCollapsedLayers] = useState<Set<string>>(new Set());
+  const [contextMenu, setContextMenu] = useState<{ keyframeId: string; x: number; y: number } | null>(null);
+  const [bezierDialog, setBezierDialog] = useState<{ keyframeId: string; bezier: BezierTangents } | null>(null);
+  const engineRef = useRef<PlaybackEngine | null>(null);
+  const tracksRef = useRef<HTMLDivElement>(null);
+
+  // Initialize PlaybackEngine
+  useEffect(() => {
+    if (!project) return;
+
+    const engine = new PlaybackEngine({
+      fps: project.fps,
+      duration: project.duration,
+      loop: project.loop,
+      onUpdate: (time) => {
+        setCurrentTime(time);
+      },
+    });
+
+    engineRef.current = engine;
+
+    return () => {
+      engine.stop();
+    };
+  }, [project?.fps, project?.duration, setCurrentTime]);
+
+  // Sync loop state with engine without recreating it
+  useEffect(() => {
+    if (engineRef.current && project) {
+      engineRef.current.setLoop(project.loop);
+    }
+  }, [project?.loop]);
+
+  // Sync playback state with engine
+  useEffect(() => {
+    if (!engineRef.current || !project) return;
+
+    if (project.isPlaying) {
+      engineRef.current.play();
+    } else {
+      engineRef.current.pause();
+    }
+  }, [project?.isPlaying]);
+
+  // Sync time when manually changed (e.g., scrubbing)
+  useEffect(() => {
+    if (!engineRef.current || !project) return;
+
+    const currentEngineTime = engineRef.current.getCurrentTime();
+    const timeDiff = Math.abs(currentEngineTime - project.currentTime);
+
+    // Only seek if there's a significant difference (avoid feedback loop)
+    if (timeDiff > 0.01 && !project.isPlaying) {
+      engineRef.current.seek(project.currentTime);
+    }
+  }, [project?.currentTime, project?.isPlaying]);
+
+  const handleTimeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!project) return;
+
+    const rawTime = parseFloat(e.target.value);
+    // Snap to nearest frame
+    const frameDuration = 1 / project.fps;
+    const frameNumber = Math.round(rawTime / frameDuration);
+    const snappedTime = frameNumber * frameDuration;
+
+    setCurrentTime(snappedTime);
+    if (engineRef.current) {
+      engineRef.current.seek(snappedTime);
+    }
+  };
+
+  const togglePlayback = () => {
+    setIsPlaying(!project?.isPlaying);
+  };
+
+  const handleStop = () => {
+    setIsPlaying(false);
+    setCurrentTime(0);
+    if (engineRef.current) {
+      engineRef.current.stop();
+    }
+  };
+
+  const handleToggleLoop = () => {
+    toggleLoop(); // Calls store action, which updates project.loop
+    // The useEffect watching project.loop will update the engine
+  };
+
+  const stepForward = () => {
+    if (engineRef.current && project) {
+      const frameDuration = 1 / project.fps;
+      const newTime = Math.min(project.currentTime + frameDuration, project.duration);
+      setCurrentTime(newTime);
+      engineRef.current.seek(newTime);
+    }
+  };
+
+  const stepBackward = () => {
+    if (engineRef.current && project) {
+      const frameDuration = 1 / project.fps;
+      const newTime = Math.max(project.currentTime - frameDuration, 0);
+      setCurrentTime(newTime);
+      engineRef.current.seek(newTime);
+    }
+  };
+
+  const currentFrame = project ? Math.floor(project.currentTime * project.fps) : 0;
+
+  // Helper: Toggle layer collapse state
+  const toggleLayerCollapse = (layerId: string) => {
+    setCollapsedLayers((prev) => {
+      const next = new Set(prev);
+      if (next.has(layerId)) {
+        next.delete(layerId);
+      } else {
+        next.add(layerId);
+      }
+      return next;
+    });
+  };
+
+  // Helper: Get all animated properties for a layer
+  const getAnimatedProperties = (layerId: string): AnimatableProperty[] => {
+    if (!project) return [];
+    const keyframes = getKeyframesForLayer(layerId);
+    const properties = new Set<AnimatableProperty>();
+    keyframes.forEach((kf) => properties.add(kf.property));
+    return Array.from(properties).sort();
+  };
+
+  // Helper: Get property display name
+  const getPropertyDisplayName = (property: AnimatableProperty): string => {
+    const names: Record<AnimatableProperty, string> = {
+      x: 'Position X',
+      y: 'Position Y',
+      rotation: 'Rotation',
+      scaleX: 'Scale X',
+      scaleY: 'Scale Y',
+      opacity: 'Opacity',
+      fill: 'Fill',
+      stroke: 'Stroke',
+      strokeWidth: 'Stroke Width',
+    };
+    return names[property] || property;
+  };
+
+  // Helper: Handle track click to add keyframe
+  const handleTrackClick = (e: React.MouseEvent<HTMLDivElement>, layerId: string, property: AnimatableProperty) => {
+    if (!project || !tracksRef.current) return;
+
+    const rect = e.currentTarget.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const percentage = clickX / rect.width;
+    const time = percentage * project.duration;
+
+    // Get current layer
+    const layer = project.layers.find((l) => l.id === layerId);
+    if (!layer) return;
+
+    // Get the current value for this property
+    let value: number | string = 0;
+    const transform = layer.element.transform;
+    const style = layer.element.style;
+
+    switch (property) {
+      case 'x':
+        value = transform.x;
+        break;
+      case 'y':
+        value = transform.y;
+        break;
+      case 'rotation':
+        value = transform.rotation;
+        break;
+      case 'scaleX':
+        value = transform.scaleX;
+        break;
+      case 'scaleY':
+        value = transform.scaleY;
+        break;
+      case 'opacity':
+        value = style.opacity ?? 1;
+        break;
+      case 'fill':
+        value = style.fill || '#000000';
+        break;
+      case 'stroke':
+        value = style.stroke || '#000000';
+        break;
+      case 'strokeWidth':
+        value = style.strokeWidth ?? 1;
+        break;
+    }
+
+    // Temporarily set time to the clicked position
+    const originalTime = project.currentTime;
+    setCurrentTime(time);
+
+    // Add keyframe
+    addKeyframe(layerId, property, value);
+
+    // Restore original time
+    setTimeout(() => setCurrentTime(originalTime), 0);
+  };
+
+  // Helper: Handle keyframe marker click
+  const handleKeyframeClick = (e: React.MouseEvent, keyframeId: string) => {
+    e.stopPropagation();
+    if (e.shiftKey) {
+      // Delete on shift+click
+      deleteKeyframe(keyframeId);
+    } else {
+      // Navigate to keyframe time
+      const keyframe = project?.keyframes.find((kf) => kf.id === keyframeId);
+      if (keyframe) {
+        setCurrentTime(keyframe.time);
+      }
+    }
+  };
+
+  // Helper: Handle keyframe right-click for easing menu
+  const handleKeyframeContextMenu = (e: React.MouseEvent, keyframeId: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    // Calculate menu dimensions (approximate)
+    const menuHeight = 220; // Approximate height of the context menu
+    const menuWidth = 160;
+
+    // Get viewport dimensions
+    const viewportHeight = window.innerHeight;
+    const viewportWidth = window.innerWidth;
+
+    // Calculate position
+    let x = e.clientX;
+    let y = e.clientY;
+
+    // Check if menu would overflow bottom
+    if (y + menuHeight > viewportHeight) {
+      y = y - menuHeight; // Position above cursor
+    }
+
+    // Check if menu would overflow right
+    if (x + menuWidth > viewportWidth) {
+      x = viewportWidth - menuWidth - 10; // Position from right edge
+    }
+
+    setContextMenu({
+      keyframeId,
+      x,
+      y,
+    });
+  };
+
+  // Helper: Change keyframe easing
+  const handleEasingChange = (easing: string) => {
+    if (contextMenu) {
+      updateKeyframe(contextMenu.keyframeId, { easing });
+      setContextMenu(null);
+    }
+  };
+
+  // Helper: Convert preset easing to bezier tangents
+  const easingToBezier = (easing: string): BezierTangents => {
+    switch (easing) {
+      case 'linear':
+        return {
+          o: { x: [0], y: [0] },
+          i: { x: [1], y: [1] },
+        };
+      case 'easeIn':
+      case 'ease-in':
+        return {
+          o: { x: [0.42], y: [0] },
+          i: { x: [1], y: [1] },
+        };
+      case 'easeOut':
+      case 'ease-out':
+        return {
+          o: { x: [0], y: [0] },
+          i: { x: [0.58], y: [1] },
+        };
+      case 'easeInOut':
+      case 'ease-in-out':
+        return {
+          o: { x: [0.333], y: [0] },
+          i: { x: [0.667], y: [1] },
+        };
+      case 'hold':
+        // Hold keyframe: step function approximation
+        // Stays at start value until the very end, then jumps
+        return {
+          o: { x: [1], y: [0] },
+          i: { x: [1], y: [1] },
+        };
+      default:
+        // Default to ease-in-out
+        return {
+          o: { x: [0.42], y: [0] },
+          i: { x: [0.58], y: [1] },
+        };
+    }
+  };
+
+  // Helper: Open custom bezier editor
+  const handleCustomEasing = () => {
+    if (!contextMenu || !project) return;
+
+    // Find the keyframe
+    const keyframe = project.keyframes.find(kf => kf.id === contextMenu.keyframeId);
+    if (!keyframe) return;
+
+    // Get existing bezier or convert from preset easing
+    let bezier: BezierTangents;
+    if ((keyframe as any).easingBezier) {
+      // Use existing custom bezier
+      bezier = (keyframe as any).easingBezier;
+    } else {
+      // Convert preset easing to bezier
+      bezier = easingToBezier(keyframe.easing);
+    }
+
+    setBezierDialog({
+      keyframeId: contextMenu.keyframeId,
+      bezier,
+    });
+    setContextMenu(null);
+  };
+
+  // Helper: Confirm custom bezier changes
+  const handleBezierConfirm = () => {
+    if (!bezierDialog) return;
+
+    updateKeyframe(bezierDialog.keyframeId, {
+      easing: 'custom',
+      easingBezier: bezierDialog.bezier,
+    } as any);
+
+    setBezierDialog(null);
+  };
+
+  // Close context menu when clicking outside
+  useEffect(() => {
+    const handleClick = () => setContextMenu(null);
+    if (contextMenu) {
+      document.addEventListener('click', handleClick);
+      return () => document.removeEventListener('click', handleClick);
+    }
+  }, [contextMenu]);
+
+  // Helper: Get easing color
+  const getEasingColor = (easing: string): string => {
+    switch (easing) {
+      case 'easeIn':
+      case 'ease-in':
+        return '#ff9800';
+      case 'easeOut':
+      case 'ease-out':
+        return '#4caf50';
+      case 'easeInOut':
+      case 'ease-in-out':
+        return '#9c27b0';
+      case 'hold':
+        return '#f44336';
+      case 'custom':
+        return '#e91e63'; // Pink for custom bezier
+      case 'linear':
+      default:
+        return '#2196f3';
+    }
+  };
+
+  // Handle wheel events on timeline tracks with native event listener
+  useEffect(() => {
+    const tracksContainer = tracksRef.current;
+    if (!tracksContainer) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      // Find the track content element that was scrolled
+      const target = e.target as HTMLElement;
+      const trackContent = target.closest('.timeline-track-content') as HTMLDivElement;
+
+      if (!trackContent) return;
+
+      // Shift+Wheel = Zoom
+      if (e.shiftKey) {
+        e.preventDefault();
+
+        // Get fresh zoom value from store
+        const store = useStore.getState();
+        const currentZoom = store.timelineZoom;
+
+        // Determine scroll direction - try multiple properties for cross-browser support
+        // Some trackpads report shift+vertical as horizontal (deltaX)
+        let zoomDelta: number;
+
+        if ((e as any).wheelDelta !== undefined && (e as any).wheelDelta !== 0) {
+          // wheelDelta: positive = scroll down = zoom OUT, negative = scroll up = zoom IN
+          // Normalize for smooth trackpad support
+          const normalized = Math.max(-50, Math.min(50, (e as any).wheelDelta)) / 250;
+          zoomDelta = normalized > 0 ? -normalized : -normalized;
+        } else if (e.deltaX !== 0) {
+          // deltaX: negative = scroll down = zoom OUT, positive = scroll up = zoom IN
+          // Normalize for smooth trackpad support
+          const normalized = Math.max(-50, Math.min(50, e.deltaX)) / 250;
+          zoomDelta = normalized < 0 ? -normalized : -normalized;
+        } else if (e.deltaY !== 0 || 1 / e.deltaY !== Infinity) {
+          // deltaY: positive = scroll down = zoom OUT, negative (including -0) = zoom IN
+          // Normalize for smooth trackpad support
+          const normalized = Math.max(-50, Math.min(50, e.deltaY)) / 250;
+          const isScrollingUp = 1 / e.deltaY < 0;
+          zoomDelta = isScrollingUp ? normalized : -normalized;
+        } else {
+          // No scroll detected, do nothing
+          return;
+        }
+
+        const newZoom = Math.max(0.5, Math.min(5, currentZoom + zoomDelta));
+        store.setTimelineZoom(newZoom);
+      }
+      // Regular vertical wheel = Horizontal scroll
+      else if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+        e.preventDefault();
+        // Normalize deltaY for smooth trackpad support
+        // Clamp and scale to prevent excessive scrolling
+        const normalizedDelta = Math.max(-100, Math.min(100, e.deltaY)) * 0.5;
+        trackContent.scrollLeft += normalizedDelta;
+      }
+      // Regular horizontal wheel/trackpad = Horizontal scroll (inverted)
+      else if (e.deltaX !== 0 && Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+        e.preventDefault();
+        const normalizedDelta = Math.max(-100, Math.min(100, e.deltaX)) * 0.5;
+        trackContent.scrollLeft -= normalizedDelta;
+      }
+    };
+
+    // Add event listener with passive: false to allow preventDefault
+    tracksContainer.addEventListener('wheel', handleWheel, { passive: false });
+
+    return () => {
+      tracksContainer.removeEventListener('wheel', handleWheel);
+    };
+  }, [setTimelineZoom]);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Prevent shortcuts when typing in input fields
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        return;
+      }
+
+      switch (e.key) {
+        case ' ':
+          e.preventDefault();
+          togglePlayback();
+          break;
+        case 'ArrowRight':
+          e.preventDefault();
+          stepForward();
+          break;
+        case 'ArrowLeft':
+          e.preventDefault();
+          stepBackward();
+          break;
+        case 'Home':
+          e.preventDefault();
+          if (project) {
+            setCurrentTime(0);
+            if (engineRef.current) {
+              engineRef.current.seek(0);
+            }
+          }
+          break;
+        case 'End':
+          e.preventDefault();
+          if (project) {
+            setCurrentTime(project.duration);
+            if (engineRef.current) {
+              engineRef.current.seek(project.duration);
+            }
+          }
+          break;
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [project, togglePlayback, stepForward, stepBackward, setCurrentTime]);
+
+  return (
+    <div className="timeline">
+      <div className="timeline-controls">
+        <button
+          onClick={stepBackward}
+          aria-label="Step backward"
+          title="Previous frame"
+        >
+          ⏮
+        </button>
+        <button
+          onClick={togglePlayback}
+          aria-label={project?.isPlaying ? 'Pause' : 'Play'}
+          title={project?.isPlaying ? 'Pause' : 'Play'}
+        >
+          {project?.isPlaying ? '⏸' : '▶'}
+        </button>
+        <button
+          onClick={handleStop}
+          aria-label="Stop"
+          title="Stop and reset"
+        >
+          ⏹
+        </button>
+        <button
+          onClick={stepForward}
+          aria-label="Step forward"
+          title="Next frame"
+        >
+          ⏭
+        </button>
+        <button
+          onClick={handleToggleLoop}
+          aria-label="Loop"
+          title={project?.loop ? 'Disable loop' : 'Enable loop'}
+          data-loop={project?.loop}
+          className={project?.loop ? 'active' : ''}
+        >
+          🔁
+        </button>
+        <span className="timeline-time">
+          {project?.currentTime.toFixed(2)}s / {project?.duration.toFixed(2)}s
+        </span>
+        <span className="timeline-frame">
+          Frame {currentFrame}
+        </span>
+        <span className="timeline-fps">
+          {project?.fps} fps
+        </span>
+      </div>
+      <div className="timeline-scrubber">
+        <input
+          type="range"
+          min="0"
+          max={project?.duration || 5}
+          step={project ? 1 / project.fps : 0.01}
+          value={project?.currentTime || 0}
+          onChange={handleTimeChange}
+          className="timeline-slider"
+        />
+      </div>
+
+      {/* Property Tracks Visualization */}
+      {project && project.layers.length > 0 && (
+        <div className="timeline-tracks" ref={tracksRef}>
+          <div className="timeline-tracks-header">
+            <span>Property Tracks</span>
+            <span className="timeline-tracks-hint">
+              Click track to add keyframe · Shift+Click keyframe to delete
+            </span>
+          </div>
+          {project.layers.map((layer) => {
+            const animatedProps = getAnimatedProperties(layer.id);
+            const isCollapsed = collapsedLayers.has(layer.id);
+
+            if (animatedProps.length === 0) return null;
+
+            return (
+              <div key={layer.id} className="timeline-layer-group">
+                <div className="timeline-layer-header" onClick={() => toggleLayerCollapse(layer.id)}>
+                  <span className="timeline-layer-collapse">
+                    {isCollapsed ? '▶' : '▼'}
+                  </span>
+                  <span className="timeline-layer-name">{layer.name}</span>
+                  <span className="timeline-layer-props-count">
+                    {animatedProps.length} {animatedProps.length === 1 ? 'property' : 'properties'}
+                  </span>
+                </div>
+
+                {!isCollapsed && animatedProps.map((property) => {
+                  const keyframes = getKeyframesForLayer(layer.id, property);
+
+                  return (
+                    <div key={`${layer.id}-${property}`} className="timeline-track">
+                      <div className="timeline-track-label">
+                        {getPropertyDisplayName(property)}
+                      </div>
+                      <div
+                        className="timeline-track-content"
+                      >
+                        <div
+                          className="timeline-track-content-inner"
+                          style={{ width: `${timelineZoom * 100}%` }}
+                          onClick={(e) => handleTrackClick(e, layer.id, property)}
+                        >
+                          {/* Time Grid */}
+                          <div className="timeline-track-grid">
+                            {Array.from({ length: Math.floor(project.duration) + 1 }, (_, i) => {
+                              const position = (i / project.duration) * 100;
+                              // Only render grid lines that are at or before 100%
+                              if (position <= 100) {
+                                return (
+                                  <div
+                                    key={i}
+                                    className="timeline-track-grid-line"
+                                    style={{ left: `${position}%` }}
+                                  />
+                                );
+                              }
+                              return null;
+                            })}
+                          </div>
+
+                          {/* Keyframe Markers */}
+                          {keyframes.map((kf) => {
+                            const position = (kf.time / project.duration) * 100;
+                            return (
+                              <div
+                                key={kf.id}
+                                className="timeline-keyframe"
+                                style={{
+                                  left: `${position}%`,
+                                  background: getEasingColor(kf.easing),
+                                }}
+                                onClick={(e) => handleKeyframeClick(e, kf.id)}
+                                onContextMenu={(e) => handleKeyframeContextMenu(e, kf.id)}
+                                title={`Time: ${kf.time.toFixed(2)}s\nEasing: ${kf.easing}\nShift+Click to delete · Right-click for easing`}
+                              />
+                            );
+                          })}
+
+                          {/* Current Time Indicator */}
+                          <div
+                            className="timeline-track-playhead"
+                            style={{ left: `${(project.currentTime / project.duration) * 100}%` }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Timeline Zoom Controls */}
+      {project && project.layers.length > 0 && (
+        <div className="timeline-zoom-controls">
+          <button onClick={() => setTimelineZoom(timelineZoom + 0.5)} title="Zoom in timeline">
+            +
+          </button>
+          <span className="timeline-zoom-level">{Math.round(timelineZoom * 100)}%</span>
+          <button onClick={() => setTimelineZoom(timelineZoom - 0.5)} title="Zoom out timeline">
+            -
+          </button>
+          <button onClick={resetTimelineView} title="Reset timeline zoom">
+            Reset
+          </button>
+        </div>
+      )}
+
+      {/* Easing Context Menu */}
+      {contextMenu && (
+        <div
+          className="timeline-context-menu"
+          style={{
+            position: 'fixed',
+            left: `${contextMenu.x}px`,
+            top: `${contextMenu.y}px`,
+            zIndex: 1000,
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="timeline-context-menu-header">Change Easing</div>
+          <button onClick={() => handleEasingChange('linear')}>
+            <span className="timeline-context-menu-swatch" style={{ background: getEasingColor('linear') }} />
+            Linear
+          </button>
+          <button onClick={() => handleEasingChange('easeIn')}>
+            <span className="timeline-context-menu-swatch" style={{ background: getEasingColor('easeIn') }} />
+            Ease In
+          </button>
+          <button onClick={() => handleEasingChange('easeOut')}>
+            <span className="timeline-context-menu-swatch" style={{ background: getEasingColor('easeOut') }} />
+            Ease Out
+          </button>
+          <button onClick={() => handleEasingChange('easeInOut')}>
+            <span className="timeline-context-menu-swatch" style={{ background: getEasingColor('easeInOut') }} />
+            Ease In-Out
+          </button>
+          <button onClick={() => handleEasingChange('hold')}>
+            <span className="timeline-context-menu-swatch" style={{ background: getEasingColor('hold') }} />
+            Hold
+          </button>
+          <button onClick={handleCustomEasing}>
+            <span className="timeline-context-menu-swatch" style={{ background: getEasingColor('custom') }} />
+            Custom...
+          </button>
+        </div>
+      )}
+
+      {/* Custom Bezier Editor Dialog */}
+      {bezierDialog && (
+        <div className="modal-overlay" onClick={() => setBezierDialog(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <h3>Custom Easing Curve</h3>
+            <BezierEditor
+              value={bezierDialog.bezier}
+              onChange={(bezier) =>
+                setBezierDialog({ ...bezierDialog, bezier })
+              }
+            />
+            <div className="modal-actions">
+              <button onClick={() => setBezierDialog(null)}>Cancel</button>
+              <button onClick={handleBezierConfirm} className="primary">
+                Apply
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
